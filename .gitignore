@@ -1,0 +1,8 @@
+/.env
+/output.json
+/vendor/
+
+.DS_Store
+.idea/
+.vscode/
+

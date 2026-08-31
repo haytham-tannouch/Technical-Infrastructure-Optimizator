@@ -1,0 +1,17 @@
+{
+    "name": "devoteam/infrastructure-optimization",
+    "description": "Infrastructure report optimization CLI",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "ext-curl": "*",
+        "php": "^8.3",
+        "vlucas/phpdotenv": "^5.7"
+    },
+    "scripts": {
+        "optimize": "php optimize.php"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
