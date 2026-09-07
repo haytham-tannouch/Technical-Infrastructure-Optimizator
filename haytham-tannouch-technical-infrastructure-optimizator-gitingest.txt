@@ -1,0 +1,1782 @@
+Directory structure:
+└── haytham-tannouch-technical-infrastructure-optimizator/
+    ├── README.md
+    ├── composer.json
+    ├── composer.lock
+    ├── config.php
+    ├── optimize.php
+    ├── .env.example
+    └── src/
+        ├── analyze.php
+        ├── ingest.php
+        ├── llm.php
+        └── output.php
+
+================================================
+FILE: README.md
+================================================
+# Optimisation de l'infrastructure
+
+Cette application en ligne de commande analyse un rapport contenant des métriques d'infrastructure, détecte les anomalies et génère un rapport JSON avec des recommandations d'optimisation.
+
+## 1. Besoin
+
+Le fichier d'entrée contient une liste de mesures techniques au format JSON : utilisation du CPU et de la mémoire, latence, stockage, réseau, taux d'erreur, température, consommation électrique et statut des services.
+
+L'application doit :
+
+1. Charger et valider le fichier d'entrée.
+2. Calculer les indicateurs globaux du rapport.
+3. Détecter les métriques qui dépassent les seuils configurés.
+4. Attribuer une sévérité à chaque anomalie.
+5. Résumer le statut des services.
+6. Utiliser un LLM pour enrichir les anomalies avec des descriptions et produire des recommandations d'optimisation.
+7. Générer un fichier `output.json` conforme au format demandé.
+
+Le rapport final contient un timestamp, les indicateurs calculés, les anomalies détectées, les recommandations et le résumé des statuts de services.
+
+## 2. Choix techniques
+
+### PHP 8.3
+
+Le projet utilise PHP 8.3 avec une architecture simple, sans framework. Le besoin correspond à un traitement CLI linéaire avec peu de dépendances. Ajouter un framework complet aurait apporté plus de configuration que de valeur pour ce périmètre.
+
+### Analyse déterministe
+
+Les calculs, les dépassements de seuils et les niveaux de sévérité sont déterminés par le code PHP. Le LLM ne calcule pas les valeurs et ne décide pas si une métrique est anormale.
+
+Cette séparation permet de garder les résultats mesurables et reproductibles. Le LLM intervient uniquement sur les tâches qui nécessitent une interprétation textuelle :
+
+- rédaction d'une description pour chaque anomalie ;
+- génération de recommandations techniques ;
+- regroupement des problèmes qui peuvent être traités par une même action.
+
+### OpenAI Responses API
+
+La communication avec le LLM passe directement par l'API HTTP avec cURL. Ce choix limite les dépendances et garde la gestion de la requête, des erreurs HTTP et des timeouts explicite dans le code.
+
+Le format de la réponse est contrôlé avec un JSON Schema strict. Le code vérifie ensuite que chaque anomalie possède exactement une description avant de générer le rapport final.
+
+### Configuration centralisée
+
+Le fichier `config.php` contient :
+
+- les chemins par défaut des fichiers d'entrée et de sortie ;
+- la configuration OpenAI ;
+- les seuils `low`, `medium` et `high` pour chaque métrique.
+
+La clé API et le modèle sont chargés depuis un fichier `.env` avec `vlucas/phpdotenv`. Les informations sensibles ne sont pas stockées dans le code ni suivies par Git.
+
+## 3. Architecture
+
+L'application est organisée sous forme d'un pipeline composé de quatre étapes indépendantes :
+
+```text
+rapport.json
+    -> ingestion
+    -> analyse
+    -> enrichissement LLM
+    -> génération du rapport
+    -> output.json
+```
+
+### `optimize.php`
+
+Point d'entrée de l'application. Il charge la configuration, récupère les chemins passés en arguments et exécute les étapes dans l'ordre. Les erreurs sont interceptées et retournées dans la sortie d'erreur avec un code de sortie non nul.
+
+### `src/ingest.php`
+
+Charge le fichier JSON et vérifie sa structure avant tout traitement :
+
+- présence et lisibilité du fichier ;
+- validité du JSON ;
+- présence des métriques attendues ;
+- validité du timestamp ;
+- validité des statuts de services.
+
+### `src/analyze.php`
+
+Parcourt toutes les mesures et produit une analyse déterministe :
+
+- moyenne de la latence et du taux d'erreur ;
+- valeurs maximales du CPU, de la mémoire et de l'uptime ;
+- détection des dépassements de seuils ;
+- niveau de sévérité le plus élevé par métrique ;
+- nombre de dépassements par métrique ;
+- pire statut observé pour chaque service.
+
+Les occurrences et le nombre total de mesures sont transmis au LLM pour fournir le contexte nécessaire. Ces champs sont internes au pipeline et ne sont pas ajoutés au format final demandé.
+
+### `src/llm.php`
+
+Envoie l'analyse au LLM et récupère :
+
+- une description pour chaque anomalie ;
+- une liste de recommandations structurées.
+
+Le nœud gère la configuration, les erreurs réseau, les erreurs retournées par l'API, les refus, le décodage JSON et la validation des descriptions.
+
+### `src/output.php`
+
+Assemble le rapport final. Les descriptions sont associées aux anomalies par le nom de la métrique et non par leur position dans le tableau.
+
+Le fichier produit respecte la structure suivante :
+
+```text
+timestamp
+insights
+anomalies
+recommendations
+service_status_summary
+```
+
+## 4. Installation, exécution et validation
+
+### Prérequis
+
+- PHP 8.3 ou supérieur ;
+- Composer ;
+- extension PHP cURL ;
+- une clé API OpenAI ;
+- un modèle OpenAI compatible avec Structured Outputs.
+
+Vérifier la version de PHP et l'extension cURL :
+
+```bash
+php -v
+php -m | grep curl
+```
+
+### Installation
+
+Installer les dépendances :
+
+```bash
+composer install
+```
+
+Créer le fichier de configuration local :
+
+```bash
+cp .env.example .env
+```
+
+Renseigner ensuite les variables dans `.env` :
+
+```dotenv
+OPENAI_API_KEY=your-api-key
+OPENAI_MODEL=your-model
+```
+
+### Générer le rapport
+
+Avec les chemins par défaut :
+
+```bash
+composer optimize
+```
+
+Cette commande lit `rapport.json` et génère `output.json` à la racine du projet.
+
+Pour utiliser des chemins personnalisés :
+
+```bash
+composer optimize -- chemin/rapport.json chemin/output.json
+```
+
+La commande peut aussi être exécutée directement avec PHP :
+
+```bash
+php optimize.php chemin/rapport.json chemin/output.json
+```
+
+Afficher l'aide :
+
+```bash
+php optimize.php --help
+```
+
+### Vérifier le projet
+
+Valider la configuration Composer :
+
+```bash
+composer validate --no-check-publish
+```
+
+Vérifier la syntaxe des fichiers PHP :
+
+```bash
+php -l optimize.php
+php -l config.php
+for file in src/*.php; do php -l "$file"; done
+```
+
+Exécuter le pipeline complet :
+
+```bash
+composer optimize
+```
+
+Vérifier que le fichier généré contient un JSON valide :
+
+```bash
+php -r 'json_decode(file_get_contents("output.json"), true, 512, JSON_THROW_ON_ERROR); echo "output.json is valid\n";'
+```
+
+En cas d'erreur, la commande affiche le message dans `STDERR` et retourne un code de sortie `1`. Si le traitement se termine correctement, le chemin du rapport généré est affiché dans le terminal.
+
+
+
+================================================
+FILE: composer.json
+================================================
+{
+    "name": "devoteam/infrastructure-optimization",
+    "description": "Infrastructure report optimization CLI",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "ext-curl": "*",
+        "php": "^8.3",
+        "vlucas/phpdotenv": "^5.7"
+    },
+    "scripts": {
+        "optimize": "php optimize.php"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
+
+
+
+================================================
+FILE: composer.lock
+================================================
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "352991beef4116a5b99646e44e373f4c",
+    "packages": [
+        {
+            "name": "graham-campbell/result-type",
+            "version": "v1.2.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/GrahamCampbell/Result-Type.git",
+                "reference": "adccca3324eece92ca35463648c12b9e6293c05b"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/GrahamCampbell/Result-Type/zipball/adccca3324eece92ca35463648c12b9e6293c05b",
+                "reference": "adccca3324eece92ca35463648c12b9e6293c05b",
+                "shasum": ""
+            },
+            "require": {
+                "php": "^7.2.5 || ^8.0",
+                "phpoption/phpoption": "^1.10"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^8.5.52 || ^9.6.34 || ^10.5.63 || ^11.5.55 || ^12.5.14"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "GrahamCampbell\\ResultType\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Graham Campbell",
+                    "email": "hello@gjcampbell.co.uk",
+                    "homepage": "https://github.com/GrahamCampbell"
+                }
+            ],
+            "description": "An Implementation Of The Result Type",
+            "keywords": [
+                "Graham Campbell",
+                "GrahamCampbell",
+                "Result Type",
+                "Result-Type",
+                "result"
+            ],
+            "support": {
+                "issues": "https://github.com/GrahamCampbell/Result-Type/issues",
+                "source": "https://github.com/GrahamCampbell/Result-Type/tree/v1.2.0"
+            },
+            "funding": [
+                {
+                    "url": "https://github.com/GrahamCampbell",
+                    "type": "github"
+                },
+                {
+                    "url": "https://tidelift.com/funding/github/packagist/graham-campbell/result-type",
+                    "type": "tidelift"
+                }
+            ],
+            "time": "2026-08-24T09:06:52+00:00"
+        },
+        {
+            "name": "phpoption/phpoption",
+            "version": "1.10.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/schmittjoh/php-option.git",
+                "reference": "67b192b6a42ec03944b972d6e633ddec78ad2c6d"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/schmittjoh/php-option/zipball/67b192b6a42ec03944b972d6e633ddec78ad2c6d",
+                "reference": "67b192b6a42ec03944b972d6e633ddec78ad2c6d",
+                "shasum": ""
+            },
+            "require": {
+                "php": "^7.2.5 || ^8.0"
+            },
+            "require-dev": {
+                "bamarni/composer-bin-plugin": "^1.8.2",
+                "phpunit/phpunit": "^8.5.54 || ^9.6.36 || ^10.5.64 || ^11.5.56 || ^12.5.33"
+            },
+            "type": "library",
+            "extra": {
+                "bamarni-bin": {
+                    "bin-links": true,
+                    "forward-command": false
+                },
+                "branch-alias": {
+                    "dev-master": "1.9-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "PhpOption\\": "src/PhpOption/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "Apache-2.0"
+            ],
+            "authors": [
+                {
+                    "name": "Johannes M. Schmitt",
+                    "email": "schmittjoh@gmail.com",
+                    "homepage": "https://github.com/schmittjoh"
+                },
+                {
+                    "name": "Graham Campbell",
+                    "email": "hello@gjcampbell.co.uk",
+                    "homepage": "https://github.com/GrahamCampbell"
+                }
+            ],
+            "description": "Option Type for PHP",
+            "keywords": [
+                "language",
+                "option",
+                "php",
+                "type"
+            ],
+            "support": {
+                "issues": "https://github.com/schmittjoh/php-option/issues",
+                "source": "https://github.com/schmittjoh/php-option/tree/1.10.0"
+            },
+            "funding": [
+                {
+                    "url": "https://github.com/GrahamCampbell",
+                    "type": "github"
+                },
+                {
+                    "url": "https://tidelift.com/funding/github/packagist/phpoption/phpoption",
+                    "type": "tidelift"
+                }
+            ],
+            "time": "2026-08-24T00:54:40+00:00"
+        },
+        {
+            "name": "symfony/polyfill-ctype",
+            "version": "v1.37.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/polyfill-ctype.git",
+                "reference": "141046a8f9477948ff284fa65be2095baafb94f2"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/symfony/polyfill-ctype/zipball/141046a8f9477948ff284fa65be2095baafb94f2",
+                "reference": "141046a8f9477948ff284fa65be2095baafb94f2",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=7.2"
+            },
+            "provide": {
+                "ext-ctype": "*"
+            },
+            "suggest": {
+                "ext-ctype": "For best performance"
+            },
+            "type": "library",
+            "extra": {
+                "thanks": {
+                    "url": "https://github.com/symfony/polyfill",
+                    "name": "symfony/polyfill"
+                }
+            },
+            "autoload": {
+                "files": [
+                    "bootstrap.php"
+                ],
+                "psr-4": {
+                    "Symfony\\Polyfill\\Ctype\\": ""
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Gert de Pagter",
+                    "email": "BackEndTea@gmail.com"
+                },
+                {
+                    "name": "Symfony Community",
+                    "homepage": "https://symfony.com/contributors"
+                }
+            ],
+            "description": "Symfony polyfill for ctype functions",
+            "homepage": "https://symfony.com",
+            "keywords": [
+                "compatibility",
+                "ctype",
+                "polyfill",
+                "portable"
+            ],
+            "support": {
+                "source": "https://github.com/symfony/polyfill-ctype/tree/v1.37.0"
+            },
+            "funding": [
+                {
+                    "url": "https://symfony.com/sponsor",
+                    "type": "custom"
+                },
+                {
+                    "url": "https://github.com/fabpot",
+                    "type": "github"
+                },
+                {
+                    "url": "https://github.com/nicolas-grekas",
+                    "type": "github"
+                },
+                {
+                    "url": "https://tidelift.com/funding/github/packagist/symfony/symfony",
+                    "type": "tidelift"
+                }
+            ],
+            "time": "2026-04-10T16:19:22+00:00"
+        },
+        {
+            "name": "symfony/polyfill-mbstring",
+            "version": "v1.38.2",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/polyfill-mbstring.git",
+                "reference": "d3d318bad5e7a1bfbd026009c8bfb8d8f99ae6b6"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/symfony/polyfill-mbstring/zipball/d3d318bad5e7a1bfbd026009c8bfb8d8f99ae6b6",
+                "reference": "d3d318bad5e7a1bfbd026009c8bfb8d8f99ae6b6",
+                "shasum": ""
+            },
+            "require": {
+                "ext-iconv": "*",
+                "php": ">=7.2"
+            },
+            "provide": {
+                "ext-mbstring": "*"
+            },
+            "suggest": {
+                "ext-mbstring": "For best performance"
+            },
+            "type": "library",
+            "extra": {
+                "thanks": {
+                    "url": "https://github.com/symfony/polyfill",
+                    "name": "symfony/polyfill"
+                }
+            },
+            "autoload": {
+                "files": [
+                    "bootstrap.php"
+                ],
+                "psr-4": {
+                    "Symfony\\Polyfill\\Mbstring\\": ""
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Nicolas Grekas",
+                    "email": "p@tchwork.com"
+                },
+                {
+                    "name": "Symfony Community",
+                    "homepage": "https://symfony.com/contributors"
+                }
+            ],
+            "description": "Symfony polyfill for the Mbstring extension",
+            "homepage": "https://symfony.com",
+            "keywords": [
+                "compatibility",
+                "mbstring",
+                "polyfill",
+                "portable",
+                "shim"
+            ],
+            "support": {
+                "source": "https://github.com/symfony/polyfill-mbstring/tree/v1.38.2"
+            },
+            "funding": [
+                {
+                    "url": "https://symfony.com/sponsor",
+                    "type": "custom"
+                },
+                {
+                    "url": "https://github.com/fabpot",
+                    "type": "github"
+                },
+                {
+                    "url": "https://github.com/nicolas-grekas",
+                    "type": "github"
+                },
+                {
+                    "url": "https://tidelift.com/funding/github/packagist/symfony/symfony",
+                    "type": "tidelift"
+                }
+            ],
+            "time": "2026-05-27T06:59:30+00:00"
+        },
+        {
+            "name": "symfony/polyfill-php80",
+            "version": "v1.37.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/polyfill-php80.git",
+                "reference": "dfb55726c3a76ea3b6459fcfda1ec2d80a682411"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/symfony/polyfill-php80/zipball/dfb55726c3a76ea3b6459fcfda1ec2d80a682411",
+                "reference": "dfb55726c3a76ea3b6459fcfda1ec2d80a682411",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=7.2"
+            },
+            "type": "library",
+            "extra": {
+                "thanks": {
+                    "url": "https://github.com/symfony/polyfill",
+                    "name": "symfony/polyfill"
+                }
+            },
+            "autoload": {
+                "files": [
+                    "bootstrap.php"
+                ],
+                "psr-4": {
+                    "Symfony\\Polyfill\\Php80\\": ""
+                },
+                "classmap": [
+                    "Resources/stubs"
+                ]
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Ion Bazan",
+                    "email": "ion.bazan@gmail.com"
+                },
+                {
+                    "name": "Nicolas Grekas",
+                    "email": "p@tchwork.com"
+                },
+                {
+                    "name": "Symfony Community",
+                    "homepage": "https://symfony.com/contributors"
+                }
+            ],
+            "description": "Symfony polyfill backporting some PHP 8.0+ features to lower PHP versions",
+            "homepage": "https://symfony.com",
+            "keywords": [
+                "compatibility",
+                "polyfill",
+                "portable",
+                "shim"
+            ],
+            "support": {
+                "source": "https://github.com/symfony/polyfill-php80/tree/v1.37.0"
+            },
+            "funding": [
+                {
+                    "url": "https://symfony.com/sponsor",
+                    "type": "custom"
+                },
+                {
+                    "url": "https://github.com/fabpot",
+                    "type": "github"
+                },
+                {
+                    "url": "https://github.com/nicolas-grekas",
+                    "type": "github"
+                },
+                {
+                    "url": "https://tidelift.com/funding/github/packagist/symfony/symfony",
+                    "type": "tidelift"
+                }
+            ],
+            "time": "2026-04-10T16:19:22+00:00"
+        },
+        {
+            "name": "vlucas/phpdotenv",
+            "version": "v5.7.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/vlucas/phpdotenv.git",
+                "reference": "301c07936b16d88628b126b01d082ba153cf4c40"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/vlucas/phpdotenv/zipball/301c07936b16d88628b126b01d082ba153cf4c40",
+                "reference": "301c07936b16d88628b126b01d082ba153cf4c40",
+                "shasum": ""
+            },
+            "require": {
+                "ext-pcre": "*",
+                "graham-campbell/result-type": "^1.2",
+                "php": "^7.2.5 || ^8.0",
+                "phpoption/phpoption": "^1.10",
+                "symfony/polyfill-ctype": "^1.26",
+                "symfony/polyfill-mbstring": "^1.26",
+                "symfony/polyfill-php80": "^1.26"
+            },
+            "require-dev": {
+                "bamarni/composer-bin-plugin": "^1.8.2",
+                "ext-filter": "*",
+                "phpunit/phpunit": "^8.5.34 || ^9.6.13 || ^10.4.2"
+            },
+            "suggest": {
+                "ext-filter": "Required to use the boolean validator."
+            },
+            "type": "library",
+            "extra": {
+                "bamarni-bin": {
+                    "bin-links": true,
+                    "forward-command": false
+                },
+                "branch-alias": {
+                    "dev-master": "5.6-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Dotenv\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "BSD-3-Clause"
+            ],
+            "authors": [
+                {
+                    "name": "Graham Campbell",
+                    "email": "hello@gjcampbell.co.uk",
+                    "homepage": "https://github.com/GrahamCampbell"
+                },
+                {
+                    "name": "Vance Lucas",
+                    "email": "vance@vancelucas.com",
+                    "homepage": "https://github.com/vlucas"
+                }
+            ],
+            "description": "Loads environment variables from `.env` to `$_ENV` and `$_SERVER` automagically, and optionally to `getenv()`.",
+            "keywords": [
+                "dotenv",
+                "env",
+                "environment"
+            ],
+            "support": {
+                "issues": "https://github.com/vlucas/phpdotenv/issues",
+                "source": "https://github.com/vlucas/phpdotenv/tree/v5.7.0"
+            },
+            "funding": [
+                {
+                    "url": "https://github.com/GrahamCampbell",
+                    "type": "github"
+                },
+                {
+                    "url": "https://tidelift.com/funding/github/packagist/vlucas/phpdotenv",
+                    "type": "tidelift"
+                }
+            ],
+            "time": "2026-08-24T18:07:49+00:00"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {
+        "ext-curl": "*",
+        "php": "^8.3"
+    },
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}
+
+
+
+================================================
+FILE: config.php
+================================================
+<?php
+
+declare(strict_types=1);
+
+return [
+    'paths' => [
+        'input' => __DIR__ . '/rapport.json',
+        'output' => __DIR__ . '/output.json',
+    ],
+    'openai' => [
+        'api_key' => $_ENV['OPENAI_API_KEY'] ?? '',
+        'model' => $_ENV['OPENAI_MODEL'] ?? '',
+        'endpoint' => 'https://api.openai.com/v1/responses',
+    ],
+    'thresholds' => [
+        'cpu_usage' => [
+            'low' => 80,
+            'medium' => 90,
+            'high' => 95,
+        ],
+        'memory_usage' => [
+            'low' => 75,
+            'medium' => 85,
+            'high' => 90,
+        ],
+        'latency_ms' => [
+            'low' => 200,
+            'medium' => 300,
+            'high' => 350,
+        ],
+        'disk_usage' => [
+            'low' => 80,
+            'medium' => 90,
+            'high' => 95,
+        ],
+        'network_in_kbps' => [
+            'low' => 1800,
+            'medium' => 2300,
+            'high' => 2700,
+        ],
+        'network_out_kbps' => [
+            'low' => 1700,
+            'medium' => 2000,
+            'high' => 2200,
+        ],
+        'io_wait' => [
+            'low' => 5,
+            'medium' => 10,
+            'high' => 12,
+        ],
+        'thread_count' => [
+            'low' => 160,
+            'medium' => 175,
+            'high' => 185,
+        ],
+        'active_connections' => [
+            'low' => 75,
+            'medium' => 110,
+            'high' => 130,
+        ],
+        'error_rate' => [
+            'low' => 0.04,
+            'medium' => 0.07,
+            'high' => 0.10,
+        ],
+        'temperature_celsius' => [
+            'low' => 75,
+            'medium' => 80,
+            'high' => 85,
+        ],
+        'power_consumption_watts' => [
+            'low' => 300,
+            'medium' => 350,
+            'high' => 375,
+        ],
+    ],
+];
+
+
+
+
+================================================
+FILE: optimize.php
+================================================
+<?php
+
+declare(strict_types=1);
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
+$dotenv->safeLoad();
+
+require_once __DIR__ . '/src/ingest.php';
+require_once __DIR__ . '/src/analyze.php';
+require_once __DIR__ . '/src/llm.php';
+require_once __DIR__ . '/src/output.php';
+
+$config = require __DIR__ . '/config.php';
+
+if (in_array($argv[1] ?? null, ['-h', '--help'], true)) {
+    fwrite(STDOUT, <<<TEXT
+Usage:
+  php optimize.php [input.json] [output.json]
+
+Arguments:
+  input.json   Input report path (default: rapport.json)
+  output.json  Output report path (default: output.json)
+
+TEXT);
+
+    exit(0);
+}
+
+$inputPath = $argv[1] ?? $config['paths']['input'];
+$outputPath = $argv[2] ?? $config['paths']['output'];
+
+try {
+    $report = loadReport($inputPath);
+    $analysis = analyzeReport($report, $config);
+  
+    $llmContent = generateLlmContent($analysis, $config['openai']);
+    writeReport($outputPath, $analysis, $llmContent);
+
+    fwrite(
+        STDOUT,
+        sprintf("Report written to: %s\n", $outputPath),
+    );
+} catch (Throwable $exception) {
+    fwrite(STDERR, sprintf("Error: %s\n", $exception->getMessage()));
+
+    exit(1);
+}
+
+
+
+================================================
+FILE: .env.example
+================================================
+OPENAI_API_KEY=
+OPENAI_MODEL=
+
+
+
+
+================================================
+FILE: src/analyze.php
+================================================
+<?php
+
+declare(strict_types=1);
+
+/**
+ * @param array<mixed> $reports
+ * @param array<mixed> $config
+ *
+ * @return array<mixed>
+ */
+function analyzeReport(array $reports, array $config): array
+{
+
+    $thresholds = $config['thresholds'];
+
+    $latencySum = 0.0;
+    $errorRateSum = 0.0;
+
+    $maxCpuUsage = 0;
+    $maxMemoryUsage = 0;
+    $maxUptime = 0;
+
+    // init compteurs et sommes
+    $anomaliesByMetric = [];
+    $servicesStatus = [];
+
+    $severityLevel = [
+        'low' => 1,
+        'medium' => 2,
+        'high' => 3
+    ];
+
+    $statusLevels = [
+        'online' => 1,
+        'degraded' => 2,
+        'offline' => 3,
+    ];
+
+    foreach($reports as $report){
+        /*
+        * calculer les sommes et max
+        */ 
+        $latencySum += $report['latency_ms'];
+        $errorRateSum += $report['error_rate'];
+        
+        $maxCpuUsage = max($maxCpuUsage, $report['cpu_usage']);
+        $maxMemoryUsage = max($maxMemoryUsage, $report['memory_usage']);
+        $maxUptime = max($maxUptime, $report['uptime_seconds']);
+
+        /*
+        * comparer les valeurs avec les thresholds et construire le tableau des anomalies
+        */
+        foreach($thresholds as $th => $levels) {
+            // vérifier si les métriques sont valides
+            if(!isset($report[$th]) || !is_numeric($report[$th])){
+                throw new RuntimeException(sprintf('Missing or invalid metric: %s', $th));
+            }
+
+            $value = $report[$th];
+            $severty = null;
+
+            if($value >= $levels['high']) {
+                $severty = 'high';
+            }elseif($value >= $levels['medium']) {
+                $severty = 'medium';
+            }elseif($value >= $levels['low']) {
+                $severty = 'low';
+            }
+
+            if($severty === null){
+                continue;
+            }
+
+            // ajouter la première anomalie par métrique
+            if(!isset($anomaliesByMetric[$th])){
+                $anomaliesByMetric[$th] = [
+                    'count' => 0,
+                    'max_value' => $value,
+                    'threshold' => $levels['low'],
+                    'severity' => $severty
+                ];
+            }
+
+            $anomaliesByMetric[$th]['count']++;
+            $anomaliesByMetric[$th]['max_value'] = max($anomaliesByMetric[$th]['max_value'], $value);
+            $currentSeverity = $anomaliesByMetric[$th]['severity'];
+
+            if($severityLevel[$severty] > $severityLevel[$currentSeverity]){
+                $anomaliesByMetric[$th]['severity'] = $severty;
+            }
+        }
+
+        /*
+        * Construire l'objet de résumé des services  
+        */
+        foreach($report['service_status'] as $service => $status){
+            if(!isset($statusLevels[$status])) {
+                throw new RuntimeException(sprintf('Unknown service status: %s', $status));
+            }
+
+            if(!isset($servicesStatus[$service])){
+                $servicesStatus[$service] = $status;
+                continue;
+            }
+
+            $currentStatus = $servicesStatus[$service];
+
+            if($statusLevels[$status] > $statusLevels[$currentStatus]){
+                $servicesStatus[$service] = $status;
+            }
+
+        }
+    }
+
+    $reportCount = count($reports);
+
+    $insights = [
+        'average_latency_ms' => round($latencySum / $reportCount, 2),
+        'max_cpu_usage' => $maxCpuUsage,
+        'max_memory_usage' => $maxMemoryUsage,
+        'error_rate' => round($errorRateSum / $reportCount, 5),
+        'uptime_seconds' => $maxUptime
+    ];
+    
+    $anomalies = [];
+
+    foreach($anomaliesByMetric as $metric => $data){
+        $anomalies[] = [
+            'metric' => $metric,
+            'value' => $data['max_value'],
+            'threshold' => $data['threshold'],
+            'severity' => $data['severity'],
+            'occurrences' => $data['count'],
+            'total_measurements' => $reportCount,
+        ];
+    }
+
+    $serviceStatusSummary = [
+        'online' => [],
+        'degraded' => [],
+        'offline' => [],
+    ];
+
+    foreach($servicesStatus as $service => $status){
+        $serviceStatusSummary[$status][] = $service;
+    }
+
+    return [
+        'insights' => $insights,
+        'anomalies' => $anomalies,
+        'service_status_summary' => $serviceStatusSummary,
+    ];
+}
+
+
+
+================================================
+FILE: src/ingest.php
+================================================
+<?php
+
+declare(strict_types=1);
+
+/**
+ * @return array<mixed>
+ */
+function loadReport(string $inputPath): array
+{
+    // Vérifier les chemins du fichier input (rapport.json)
+    if (!is_file($inputPath)) {
+        throw new RuntimeException(sprintf('Input file not found: %s', $inputPath));
+    }
+
+    if (!is_readable($inputPath)) {
+        throw new RuntimeException(sprintf('Input file is not readable: %s', $inputPath));
+    }
+
+    // vérifier le fichier
+    $content = file_get_contents($inputPath);
+
+    if ($content === false) {
+        throw new RuntimeException(sprintf('Unable to read input file: %s', $inputPath));
+    }
+
+    // décoder le fichier pour l'envoyer au prochain nœud pour le traitement et l'analyse
+    try {
+        $report = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
+    } catch (JsonException $exception) {
+        throw new RuntimeException(
+            sprintf('Invalid JSON in input file: %s', $exception->getMessage()),
+            previous: $exception,
+        );
+    }
+
+    if (!is_array($report) || !array_is_list($report)) {
+        throw new RuntimeException('The input JSON must contain a list of report entries.');
+    }
+
+    if ($report === []) {
+        throw new RuntimeException('The input JSON cannot be empty.');
+    }
+
+    $numericFields = [
+        'cpu_usage',
+        'memory_usage',
+        'latency_ms',
+        'disk_usage',
+        'network_in_kbps',
+        'network_out_kbps',
+        'io_wait',
+        'thread_count',
+        'active_connections',
+        'error_rate',
+        'uptime_seconds',
+        'temperature_celsius',
+        'power_consumption_watts',
+    ];
+
+    $allowedServiceStatuses = [
+        'online',
+        'degraded',
+        'offline',
+    ];
+
+    foreach ($report as $index => $entry) {
+        if (!is_array($entry)) {
+            throw new RuntimeException(
+                sprintf('Report entry %d must be an object.', $index),
+            );
+        }
+
+        if (
+            !isset($entry['timestamp'])
+            || !is_string($entry['timestamp'])
+            || DateTimeImmutable::createFromFormat(
+                DateTimeInterface::ATOM,
+                $entry['timestamp'],
+            ) === false
+        ) {
+            throw new RuntimeException(
+                sprintf('Invalid timestamp in report entry %d.', $index),
+            );
+        }
+
+        foreach ($numericFields as $field) {
+            if (
+                !isset($entry[$field])
+                || (!is_int($entry[$field]) && !is_float($entry[$field]))
+            ) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Missing or invalid field "%s" in report entry %d.',
+                        $field,
+                        $index,
+                    ),
+                );
+            }
+        }
+
+        if (
+            !isset($entry['service_status'])
+            || !is_array($entry['service_status'])
+        ) {
+            throw new RuntimeException(
+                sprintf(
+                    'Missing or invalid service_status in report entry %d.',
+                    $index,
+                ),
+            );
+        }
+
+        foreach ($entry['service_status'] as $service => $status) {
+            if (!in_array($status, $allowedServiceStatuses, true)) {
+                throw new RuntimeException(
+                    sprintf(
+                        'Invalid status "%s" for service "%s" in report entry %d.',
+                        $status,
+                        $service,
+                        $index,
+                    ),
+                );
+            }
+        }
+    }
+
+    return $report;
+}
+
+
+
+================================================
+FILE: src/llm.php
+================================================
+<?php
+
+declare(strict_types=1);
+
+/**
+ * @param array<mixed> $analysis
+ * @param array<mixed> $openAiConfig
+ *
+ * @return array<mixed>
+ */
+function generateLlmContent(array $analysis, array $openAiConfig): array
+{
+    /*
+    * vérifier les clés
+    */
+    $apiKey = trim((string) ($openAiConfig['api_key'] ?? ''));
+    $model = trim((string) ($openAiConfig['model'] ?? ''));
+    $endpoint = trim((string) ($openAiConfig['endpoint'] ?? ''));
+
+    if ($apiKey === '') {
+        throw new RuntimeException('OPENAI_API_KEY is not configured.');
+    }
+    if ($model === '') {
+        throw new RuntimeException('OPENAI_MODEL is not configured.');
+    }
+    if ($endpoint === '') {
+        throw new RuntimeException('OpenAI endpoint is not configured.');
+    }
+    if (!extension_loaded('curl')) {
+        throw new RuntimeException('The PHP cURL extension is required.');
+    }
+    if (
+        !isset(
+            $analysis['insights'],
+            $analysis['anomalies'],
+            $analysis['service_status_summary'],
+        )
+    ) {
+        throw new InvalidArgumentException(
+            'The analysis payload is incomplete.',
+        );
+    }
+
+    /**
+     * encoder les 'insights' en JSON pour les envoyer au LLM
+     */
+    $analysisJson = json_encode($analysis, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+    /**
+     * Construire le schéma de la réponse du LLM
+     */
+    $responseSchema = [
+        'type' => 'object',
+        'properties' => [
+            'descriptions' => [
+                'type' => 'array',
+                'items' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'metric' => [
+                            'type' => 'string',
+                        ],
+                        'description' => [
+                            'type' => 'string',
+                        ],
+                    ],
+                    'required' => [
+                        'metric',
+                        'description',
+                    ],
+                    'additionalProperties' => false,
+                ],
+            ],
+            'recommendations' => [
+                'type' => 'array',
+                'items' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'id' => [
+                            'type' => 'string',
+                        ],
+                        'action' => [
+                            'type' => 'string',
+                        ],
+                        'target' => [
+                            'type' => 'string',
+                        ],
+                        'parameters' => [
+                            'type' => 'object',
+                            'properties' => [
+                                'implementation' => [
+                                    'type' => 'string',
+                                ],
+                                'configuration' => [
+                                    'type' => 'string',
+                                ],
+                            ],
+                            'required' => [
+                                'implementation',
+                                'configuration',
+                            ],
+                            'additionalProperties' => false,
+                        ],
+                        'benefit_estimate' => [
+                            'type' => 'string',
+                        ],
+                    ],
+                    'required' => [
+                        'id',
+                        'action',
+                        'target',
+                        'parameters',
+                        'benefit_estimate',
+                    ],
+                    'additionalProperties' => false,
+                ],
+            ],
+        ],
+        'required' => [
+            'descriptions',
+            'recommendations',
+        ],
+        'additionalProperties' => false,
+    ];
+
+    /**
+     * Construire le "prompt" ainsi que la requête à envoyer au LLM
+     */
+     $payload = [
+        'model' => $model,
+        'instructions' => <<<'PROMPT'
+            <role>
+            You are a senior infrastructure optimization expert.
+            </role>
+
+            <context>
+            The input contains deterministic infrastructure insights, aggregated anomalies, and service statuses produced by a PHP application.
+
+            Treat every calculated value and service status in the input as the source of truth.
+
+            The input contains aggregated information only. It does not contain enough information to establish temporal correlation, simultaneity, causality, or root causes.
+            </context>
+
+            <input_semantics>
+            Each anomaly contains the following fields:
+
+            - metric: the exact name of the monitored metric.
+            - value: the maximum observed value for that metric across the complete report.
+            - threshold: the base threshold used to determine whether a measurement is anomalous.
+            - severity: the highest severity observed for that metric.
+            - occurrences: the number of measurements where the metric value reached or exceeded the threshold.
+            - total_measurements: the total number of measurements analyzed.
+
+            Important interpretation rules:
+
+            - The maximum value did not necessarily occur as many times as the occurrence count.
+            - Never state or imply that the maximum value occurred in every anomalous measurement.
+            - An occurrence count represents threshold breaches, not repetitions of the maximum value.
+            - Equal occurrence counts for different metrics do not prove that those metrics occurred during the same measurements.
+            - The input does not establish that two anomalies happened simultaneously.
+            - The input does not establish that one anomaly caused another anomaly.
+
+            The service_status_summary groups each service by its worst observed status across the complete report.
+
+            - A degraded or offline status does not indicate how many times the status occurred.
+            - It does not indicate when the status occurred.
+            - It does not prove that the status occurred simultaneously with any numerical anomaly.
+            - Do not describe a service as continuously or currently degraded or offline.
+            </input_semantics>
+
+            <objectives>
+            1. Write exactly one description for every anomaly.
+            2. Generate concrete and actionable infrastructure recommendations based on the detected anomalies and problematic service statuses.
+            3. Address every service marked as degraded or offline.
+            4. Group related problems when they can reasonably be addressed by the same recommendation.
+            </objectives>
+
+            <anomaly_description_rules>
+            - Use only information provided in the input.
+            - Preserve metric names exactly.
+            - Do not modify values, thresholds, severities, occurrence counts, or total measurement counts.
+            - Describe occurrences as measurements, not requests, incidents, events, or time periods.
+            - Clearly distinguish observed facts from possible technical consequences.
+            - Do not claim that metrics occurred simultaneously.
+            - Do not claim causal relationships between metrics.
+            - Use cautious terms such as "may", "could", or "might" for possible consequences.
+            - Do not describe a problem as continuous, permanent, recurring, or sustained.
+            - Do not say that the maximum value occurred as many times as the occurrence count.
+            - Keep every description concise, factual, and understandable by a CTO.
+
+            Use this factual structure when appropriate:
+
+            "<metric> exceeded the threshold of <threshold> in <occurrences> out of <total_measurements> measurements, with a maximum observed value of <value>. This may indicate <possible consequence>."
+
+            The possible consequence must be presented as a possibility, not as an observed fact or confirmed cause.
+            </anomaly_description_rules>
+
+            <service_status_rules>
+            - Every service marked as degraded or offline must be explicitly addressed by at least one recommendation.
+            - Do not ignore any problematic service.
+            - Multiple problematic services may be grouped into the same recommendation when the proposed action reasonably applies to all of them.
+            - When multiple services are grouped, explicitly mention every affected service in the action or implementation.
+            - A service marked as online does not require a recommendation unless it is directly relevant to another detected problem.
+            - Treat the service status as the worst observed status in the report.
+            - Do not claim that a service remained in that status continuously.
+            - Do not invent a cause for a degraded or offline service.
+            - Do not claim that a service status caused a numerical anomaly.
+            </service_status_rules>
+
+            <recommendation_rules>
+            - Generate as many recommendations as necessary to meaningfully address the detected problems.
+            - Produce the smallest non-redundant set of recommendations that collectively addresses all anomalies and problematic services.
+            - Do not generate recommendations only to reach a specific number.
+            - Avoid redundant or duplicate recommendations.
+            - Every recommendation must be connected to at least one provided anomaly or problematic service status.
+            - Prefer grouping related anomalies when one technical action can reasonably address them together.
+            - Keep unrelated problems in separate recommendations.
+            - Prioritize actionable recommendations over generic advice.
+            - Do not invent cloud providers, technologies, products, application runtimes, infrastructure components, incidents, or root causes that are not present in the input.
+            - General technical solutions such as scaling, load balancing, monitoring, resource tuning, capacity management, and incident investigation are allowed.
+            - Present unverified technical causes as investigation hypotheses, not as facts.
+            - Do not present a proposed solution as guaranteed to solve the problem.
+            - Do not claim that different metrics occurred during the same measurements.
+            - When referring to anomaly data, clearly distinguish the maximum observed value from the number of threshold breaches.
+            - Recommendations may propose collecting or correlating additional data, but must not claim that such correlation already exists.
+            </recommendation_rules>
+
+            <recommendation_structure_rules>
+            - Use unique sequential recommendation IDs starting with REC-001.
+            - The target must be a short infrastructure component identifier.
+            - Do not include measurements or explanations inside the target.
+            - Explain the concrete action to perform in parameters.implementation.
+            - Explain the relevant configuration or operational condition in parameters.configuration.
+            - Keep benefit estimates realistic, qualitative, and directly connected to the detected problem.
+            - Benefit estimates must use cautious language and must not promise a guaranteed result.
+            </recommendation_structure_rules>
+
+            <target_examples>
+            compute_resources
+            database
+            api_gateway
+            cache
+            storage
+            connection_pool
+            network
+            hosts
+            </target_examples>
+
+            <language>
+            Write all descriptions and recommendations in clear professional English.
+            </language>
+
+            <success_criteria>
+            - Every input anomaly has exactly one description.
+            - Every problematic service is explicitly addressed by at least one recommendation.
+            - No metric, value, occurrence count, threshold, severity, or service status is modified.
+            - Maximum values are never confused with occurrence counts.
+            - No temporal correlation or simultaneity is invented.
+            - Every recommendation is justified by information contained in the input.
+            - Related problems are grouped when appropriate without hiding or ignoring problematic services.
+            - No unsupported factual or causal claim is presented as certain.
+            - Recommendations are actionable and non-redundant.
+            - Every recommendation follows the required Structured Output schema.
+            </success_criteria>
+            PROMPT,
+        'input' => sprintf(
+            "Infrastructure analysis:\n%s",
+            $analysisJson,
+        ),
+        'text' => [
+            'format' => [
+                'type' => 'json_schema',
+                'name' => 'infrastructure_optimization',
+                'strict' => true,
+                'schema' => $responseSchema,
+            ],
+        ],
+        'max_output_tokens' => 2500,
+        'store' => false,
+    ];
+
+    $requestBody = json_encode(
+        $payload,
+        JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+    );
+
+    /**
+     * Exécuter la requête à l'API OpenAI
+     */
+    $curl = curl_init($endpoint);
+
+    if ($curl === false) {
+        throw new RuntimeException(
+            'Unable to initialize the OpenAI HTTP request.',
+        );
+    }
+
+    curl_setopt_array($curl, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_HTTPHEADER => [
+            sprintf('Authorization: Bearer %s', $apiKey),
+            'Content-Type: application/json',
+        ],
+        CURLOPT_POSTFIELDS => $requestBody,
+    ]);
+
+    $rawResponse = curl_exec($curl);
+
+    if ($rawResponse === false) {
+        $error = curl_error($curl);
+        curl_close($curl);
+
+        throw new RuntimeException(
+            sprintf('OpenAI request failed: %s', $error),
+        );
+    }
+
+    $statusCode = (int) curl_getinfo(
+        $curl,
+        CURLINFO_HTTP_CODE,
+    );
+
+    curl_close($curl);
+
+    /**
+     * Vérifier la réponse de l'API
+     */
+    try {
+        $response = json_decode(
+            $rawResponse,
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+    } catch (JsonException $exception) {
+        throw new RuntimeException(
+            'OpenAI returned an invalid JSON response.',
+            previous: $exception,
+        );
+    }
+    if($statusCode < 200 || $statusCode >= 300){
+        $errorMessage = $response['error']['message'] ?? sprintf('HTTP status %d', $statusCode);
+
+        throw new RuntimeException(sprintf('OpenAI API error: %s', $errorMessage));
+    }
+
+    if (($response['status'] ?? null) !== 'completed') {
+        throw new RuntimeException(sprintf('OpenAI response was not completed. Status: %s',$response['status'] ?? 'unknown'));
+    }
+
+    /**
+     * Extraire le contenu généré par le LLM
+     */
+    $outputText = extractOpenAiOutputText($response);
+
+    try {
+        $llmContent = json_decode($outputText,true,512,JSON_THROW_ON_ERROR);
+    } catch (JsonException $exception) {
+        throw new RuntimeException('The LLM output is not valid JSON.',previous: $exception);
+    }
+
+    if (
+        !is_array($llmContent)
+        || !isset(
+            $llmContent['descriptions'],
+            $llmContent['recommendations'],
+        )
+        || !is_array($llmContent['descriptions'])
+        || !is_array($llmContent['recommendations'])
+    ) {
+        throw new RuntimeException('The LLM output does not contain the expected fields.');
+    }
+
+    /**
+     * Valider les descriptions des anomalies
+     */
+    validateLlmDescriptions($analysis['anomalies'],$llmContent['descriptions']);
+
+    return $llmContent;
+}
+
+/**
+ * @param array<mixed> $response
+ */
+function extractOpenAiOutputText(array $response): string
+{
+    $outputText = '';
+
+    foreach ($response['output'] ?? [] as $outputItem) {
+        if (!is_array($outputItem) || ($outputItem['type'] ?? null) !== 'message') {
+            continue;
+        }
+
+        foreach ($outputItem['content'] ?? [] as $contentItem) {
+            if (!is_array($contentItem)) {
+                continue;
+            }
+
+            if (($contentItem['type'] ?? null) === 'refusal') {
+                throw new RuntimeException(
+                    sprintf('The LLM refused the request: %s',$contentItem['refusal'] ?? 'unknown reason',)
+                );
+            }
+
+            if (($contentItem['type'] ?? null) === 'output_text' && isset($contentItem['text']) && is_string($contentItem['text'])) {
+                $outputText .= $contentItem['text'];
+            }
+        }
+    }
+
+    if ($outputText === '') {
+        throw new RuntimeException('The OpenAI response does not contain text output.');
+    }
+
+    return $outputText;
+}
+
+/**
+ * @param array<mixed> $anomalies
+ * @param array<mixed> $descriptions
+ */
+function validateLlmDescriptions(
+    array $anomalies,
+    array $descriptions,
+): void {
+    $expectedMetrics = array_column(
+        $anomalies,
+        'metric',
+    );
+
+    $returnedMetrics = [];
+
+    foreach ($descriptions as $description) {
+        if (
+            !is_array($description)
+            || !isset(
+                $description['metric'],
+                $description['description'],
+            )
+            || !is_string($description['metric'])
+            || !is_string($description['description'])
+            || trim($description['description']) === ''
+        ) {
+            throw new RuntimeException('The LLM returned an invalid anomaly description.');
+        }
+
+        $returnedMetrics[] = $description['metric'];
+    }
+
+    sort($expectedMetrics);
+    sort($returnedMetrics);
+
+    if ($expectedMetrics !== $returnedMetrics) {
+        throw new RuntimeException('The LLM did not return exactly one description per anomaly.');
+    }
+}
+
+
+
+================================================
+FILE: src/output.php
+================================================
+<?php
+
+declare(strict_types=1);
+
+/**
+ * @param array<mixed> $analysis
+ * @param array<mixed> $llmContent
+ */
+function writeReport(string $outputPath, array $analysis, array $llmContent): void
+{
+    /**
+     * Vérifier le contenu du LLM + les insights
+     */
+    if (
+        !isset(
+            $analysis['insights'],
+            $analysis['anomalies'],
+            $analysis['service_status_summary'],
+            $llmContent['descriptions'],
+            $llmContent['recommendations'],
+        )
+        || !is_array($analysis['insights'])
+        || !is_array($analysis['anomalies'])
+        || !is_array($analysis['service_status_summary'])
+        || !is_array($llmContent['descriptions'])
+        || !is_array($llmContent['recommendations'])
+    ) {
+        throw new InvalidArgumentException(
+            'The report data is incomplete.',
+        );
+    }
+
+    /**
+     * Alimenter les anomalies avec descriptions plus pertinentes renvoyées par le LLM
+     */
+    $descriptionsByMetric = [];
+
+    foreach ($llmContent['descriptions'] as $description) {
+        if (
+            !is_array($description)
+            || !isset(
+                $description['metric'],
+                $description['description'],
+            )
+            || !is_string($description['metric'])
+            || !is_string($description['description'])
+        ) {
+            throw new RuntimeException(
+                'An anomaly description is invalid.',
+            );
+        }
+
+        $descriptionsByMetric[$description['metric']] = $description['description'];
+    }
+
+    $anomalies = [];
+
+    foreach ($analysis['anomalies'] as $anomaly) {
+        if (
+            !is_array($anomaly)
+            || !isset(
+                $anomaly['metric'],
+                $anomaly['value'],
+                $anomaly['threshold'],
+                $anomaly['severity'],
+            )
+            || !is_string($anomaly['metric'])
+        ) {
+            throw new RuntimeException('An analyzed anomaly is invalid.');
+        }
+
+        $metric = $anomaly['metric'];
+
+        if (!isset($descriptionsByMetric[$metric])) {
+            throw new RuntimeException(
+                sprintf('Missing description for metric: %s', $metric),
+            );
+        }
+
+        $anomalies[] = [
+            'metric' => $metric,
+            'value' => $anomaly['value'],
+            'threshold' => $anomaly['threshold'],
+            'severity' => $anomaly['severity'],
+            'description' => $descriptionsByMetric[$metric],
+        ];
+    }
+
+
+    /**
+     * Construire l'objet final
+     */
+    $report = [
+        'timestamp' => (new DateTimeImmutable(
+            'now',
+            new DateTimeZone('UTC'),
+        ))->format('Y-m-d\TH:i:s\Z'),
+        'insights' => $analysis['insights'],
+        'anomalies' => $anomalies,
+        'recommendations' => $llmContent['recommendations'],
+        'service_status_summary' => $analysis['service_status_summary'],
+    ];
+
+    $json = json_encode(
+        $report,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+    );
+
+    /**
+     * Générer le fichier JSON final (output.json)
+     */
+    if (file_put_contents($outputPath, $json . PHP_EOL, LOCK_EX) === false) {
+        throw new RuntimeException(
+            sprintf('Unable to write output file: %s', $outputPath),
+        );
+    }
+}
+
+
